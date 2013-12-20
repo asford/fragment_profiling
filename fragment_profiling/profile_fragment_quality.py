@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 import numpy
 import pylab
 
@@ -18,13 +20,12 @@ class ProfileFragmentQuality(object):
         self.select_fragments_per_position = select_fragments_per_position
         self.target_score_quantile = 1.0 - (float(select_fragments_per_position) / len(source_fragments))
         
-        self.per_position_selected_fragments = None
-        self.per_position_selection_rmsds = None
-        
     def perform_fragment_analysis(self, fragments):
         """Perform profile-based fragment quality analysis for given fragments.
         
         fragments - array((n,), dtype=[("sc", ("aa", "S1")), ("coordinates", ...)]
+
+        returns - ProfileFragmentQualityResult
         """
         
         num_fragments = len(fragments)
@@ -33,8 +34,8 @@ class ProfileFragmentQuality(object):
         source_fragment_position_scores = numpy.empty_like(self.encoded_source_fragment_sequences, dtype=self.logscore_substitution_profile.dtype)
         source_fragment_total_scores = numpy.empty(self.encoded_source_fragment_sequences.shape[:-1], dtype=self.logscore_substitution_profile.dtype)
         
-        self.per_position_selected_fragments = numpy.empty((len(fragments), self.select_fragments_per_position), dtype=self.source_fragments.dtype)
-        self.per_position_selection_rmsds = numpy.empty_like(self.per_position_selected_fragments, dtype=float)
+        per_position_selected_fragments = numpy.empty((len(fragments), self.select_fragments_per_position), dtype=self.source_fragments.dtype)
+        per_position_selection_rmsds = numpy.empty_like(per_position_selected_fragments, dtype=float)
         
         for n in xrange(len(fragments)):
             frag = fragments[n]
@@ -50,47 +51,10 @@ class ProfileFragmentQuality(object):
             selection_rmsd = atom_array_broadcast_rmsd(frag["coordinates"], selected_fragments["coordinates"])
             
             fragment_ordering = numpy.argsort(selection_rmsd)
-            self.per_position_selected_fragments[n] = selected_fragments[fragment_ordering]
-            self.per_position_selection_rmsds[n] = selection_rmsd[fragment_ordering]
-    
-    def plot_per_position_fragment_analysis(self, position, target_axis = None):
-        position = int(position)
-        
-        if position < 0 or position >= self.per_position_selection_rmsds.shape[0]:
-            raise ValueError("Invalid fragment position specified.")
-            
-        if target_axis is None:
-            fig = pylab.figure()
-            target_axis = fig.gca()
-        
-        target_axis.set_title("Fragment %s rmsd distribution." % position)
-        target_axis.hist(self.per_position_selection_rmsds[position], bins=50, normed=True)
-        target_axis.grid(False, axis="y")
-        target_axis.set_xlabel("RMSD")
-        target_axis = target_axis.twinx()
-        target_axis.set_yscale("symlog")
-        target_axis.plot(self.per_position_selection_rmsds[position], pylab.arange(len(self.per_position_selection_rmsds[position])), label="Fragment count at RMSD.", color="red")
+            per_position_selected_fragments[n] = selected_fragments[fragment_ordering]
+            per_position_selection_rmsds[n] = selection_rmsd[fragment_ordering]
 
-        target_axis.legend()
-        
-        return target_axis
-    
-    def plot_all_fragment_analysis(self, target_axis = None):
-        if target_axis is None:
-            fig = pylab.figure()
-            target_axis = fig.gca()
-            
-        result_rmsds = numpy.array(len(self.per_position_selection_rmsds))
-        
-        target_axis.set_title("Per-position fragment RMSD profile.")
-        target_axis.set_xlabel("Position")
-        target_axis.set_ylabel("RMSD")
-        target_axis.boxplot(self.per_position_selection_rmsds.T)
-        target_axis.plot(
-                         numpy.arange(self.per_position_selection_rmsds.shape[0]) + 1,
-                         self.per_position_selection_rmsds[:,1],
-                         color="red", label="Minimum fragment rmsd.")
-        target_axis.legend()
+        return ProfileFragmentQualityResult(fragments, per_position_selected_fragments, per_position_selection_rmsds)
         
     def position_profile_from_sequence(self, input_sequence, score_table):
         """Create position specific profile table from input sequence and score table.
@@ -155,3 +119,45 @@ class ProfileFragmentQuality(object):
         assert numpy.alltrue(result != ".")
         
         return result
+
+class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple", ["query_fragments", "selected_fragments", "selected_fragment_rmsds"])):
+    """Result container for fragment profiling runs."""
+
+    def plot_per_position_fragment_analysis(self, position, target_axis = None):
+        position = int(position)
+        
+        if position < 0 or position >= self.selected_fragment_rmsds.shape[0]:
+            raise ValueError("Invalid fragment position specified.")
+            
+        if target_axis is None:
+            fig = pylab.figure()
+            target_axis = fig.gca()
+        
+        target_axis.set_title("Fragment %s rmsd distribution." % position)
+        target_axis.hist(self.selected_fragment_rmsds[position], bins=50, normed=True)
+        target_axis.grid(False, axis="y")
+        target_axis.set_xlabel("RMSD")
+        target_axis = target_axis.twinx()
+        target_axis.set_yscale("symlog")
+        target_axis.plot(self.selected_fragment_rmsds[position], pylab.arange(len(self.selected_fragment_rmsds[position])), label="Fragment count at RMSD.", color="red")
+
+        target_axis.legend()
+        
+        return target_axis
+    
+    def plot_all_fragment_analysis(self, target_axis = None):
+        if target_axis is None:
+            fig = pylab.figure()
+            target_axis = fig.gca()
+            
+        result_rmsds = numpy.array(len(self.selected_fragment_rmsds))
+        
+        target_axis.set_title("Per-position fragment RMSD profile.")
+        target_axis.set_xlabel("Position")
+        target_axis.set_ylabel("RMSD")
+        target_axis.boxplot(self.selected_fragment_rmsds.T)
+        target_axis.plot(
+                         numpy.arange(self.selected_fragment_rmsds.shape[0]) + 1,
+                         self.selected_fragment_rmsds[:,1],
+                         color="red", label="Minimum fragment rmsd.")
+        target_axis.legend()
