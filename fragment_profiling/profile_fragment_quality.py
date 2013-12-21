@@ -1,24 +1,42 @@
+import logging
+
 from collections import namedtuple
 
 import numpy
 import pylab
 
-from .profile_calculation import extract_profile_scores
+from .profile_calculation import extract_logscore_profile_scores, select_by_additive_profile_score
 
 from interface_fragment_matching.fragment_fitting.rmsd_calc import atom_array_broadcast_rmsd
+from interface_fragment_matching.fragment_fitting.store import FragmentSpecification
 
 class ProfileFragmentQuality(object):
+    logger = logging.getLogger("fragment_profling.profile_fragment_quality.ProfileFragmentQuality")
+
     aa_codes ='ARNDCEQGHILKMFPSTWYV'
     aa_encoding = dict((aa, i) for i, aa in enumerate(aa_codes))
 
-    def __init__(self, source_fragments, logscore_substitution_profile, select_fragments_per_position=200):
-        self.source_fragments = source_fragments
-        self.encoded_source_fragment_sequences = self.sequence_array_to_encoding(source_fragments["sc"]["aa"])
+    def __init__(self, source_residues, logscore_substitution_profile, select_fragments_per_query_position=200):
+        self.source_residues = source_residues
+        self.encoded_source_residue_sequences = self.sequence_array_to_encoding(source_residues["sc"]["aa"])
         
         self.logscore_substitution_profile = self.encode_score_table(logscore_substitution_profile)
         
-        self.select_fragments_per_position = select_fragments_per_position
-        self.target_score_quantile = 1.0 - (float(select_fragments_per_position) / len(source_fragments))
+        self.select_fragments_per_query_position = select_fragments_per_query_position
+
+        # Cache fragment start indicies over multiple profiling runs.
+        self._cached_fragment_start_length = None
+        self._cached_fragment_start_indicies = None
+
+    def get_fragment_start_residues(self, fragment_length):
+        """Get all starting indicies in self.source_residues for the given fragment length."""
+
+        if fragment_length != self._cached_fragment_start_length:
+            fspec = FragmentSpecification(fragment_length)
+            self._cached_fragment_start_length = fragment_length
+            self._cached_fragment_start_indicies = fspec.fragment_start_residues_from_residue_array(self.source_residues)
+
+        return self._cached_fragment_start_indicies
         
     def perform_fragment_analysis(self, fragments):
         """Perform profile-based fragment quality analysis for given fragments.
@@ -27,34 +45,79 @@ class ProfileFragmentQuality(object):
 
         returns - ProfileFragmentQualityResult
         """
+
+        self.logger.info("perform_fragment_analysis(<%s fragments>)", len(fragments))
+
+        fragments = numpy.array(fragments)
+        (num_query_fragments,) = fragments.shape
+
+        fspec = FragmentSpecification.from_fragment_dtype(fragments.dtype)
+
+        source_fragment_start_indicies = self.get_fragment_start_residues(fspec.fragment_length)
+
+        # Select dummy fragment with fspec to get dtype
+        per_position_selected_fragments = numpy.empty(
+                (len(fragments), self.select_fragments_per_query_position),
+                dtype = fspec.fragments_from_start_residues(
+                    self.source_residues, numpy.array([0]),
+                    additional_per_residue_fields=["bb", "sc", "ss"]).dtype)
+
+        per_position_selection_scores = numpy.empty_like(per_position_selected_fragments, dtype=float)
+        per_position_selection_rmsds = numpy.empty_like(per_position_selection_scores)
         
-        num_fragments = len(fragments)
-        
-        # Pre-allocating result score tables.
-        source_fragment_position_scores = numpy.empty_like(self.encoded_source_fragment_sequences, dtype=self.logscore_substitution_profile.dtype)
-        source_fragment_total_scores = numpy.empty(self.encoded_source_fragment_sequences.shape[:-1], dtype=self.logscore_substitution_profile.dtype)
-        
-        per_position_selected_fragments = numpy.empty((len(fragments), self.select_fragments_per_position), dtype=self.source_fragments.dtype)
-        per_position_selection_rmsds = numpy.empty_like(per_position_selected_fragments, dtype=float)
-        
+        for n in xrange(len(fragments)):
+            self.logger.info("profiling fragment: %s", n)
+            frag = fragments[n]
+
+            self.logger.info("profiling sequence: %s", frag["sc"]["aa"])
+            frag_sequence = self.sequence_array_to_encoding(frag["sc"]["aa"])
+            frag_profile = self.position_profile_from_sequence(frag_sequence, self.logscore_substitution_profile)
+            
+            self.logger.debug("profile table: %s", frag_profile)
+
+            score_selections = select_by_additive_profile_score(
+                    frag_profile,
+                    self.encoded_source_residue_sequences,
+                    source_fragment_start_indicies,
+                    self.select_fragments_per_query_position)
+
+            assert len(score_selections) == self.select_fragments_per_query_position
+            
+
+            per_position_selection_scores[n] = score_selections["score"]
+            per_position_selected_fragments[n] = fspec.fragments_from_start_residues(
+                self.source_residues,
+                score_selections["index"],
+                additional_per_residue_fields=["bb", "sc", "ss"])
+            per_position_selection_rmsds[n] = atom_array_broadcast_rmsd(
+                                            fragments[n]["coordinates"],
+                                            per_position_selected_fragments[n]["coordinates"])
+
+        return ProfileFragmentQualityResult(fragments, per_position_selected_fragments, per_position_selection_rmsds)
+
+    def profile_fragment_scoring(self, fragments):
+        fragments = numpy.array(fragments)
+        (num_query_fragments,) = fragments.shape
+
+        fspec = FragmentSpecification.from_fragment_dtype(fragments.dtype)
+
+        source_fragment_start_indicies = self.get_fragment_start_residues(fspec.fragment_length)
+
+        # Pre-allocate result score tables.
+        source_fragment_total_scores = numpy.empty((len(fragments), len(source_fragment_start_indicies)), dtype=self.logscore_substitution_profile.dtype)
+
         for n in xrange(len(fragments)):
             frag = fragments[n]
             frag_sequence = self.sequence_array_to_encoding(frag["sc"]["aa"])
             frag_profile = self.position_profile_from_sequence(frag_sequence, self.logscore_substitution_profile)
             
-            extract_profile_scores(frag_profile, self.encoded_source_fragment_sequences, source_fragment_position_scores)
-            numpy.sum(source_fragment_position_scores, axis=-1, out=source_fragment_total_scores)
-            
-            cutoff_score = numpy.percentile(source_fragment_total_scores, self.target_score_quantile * 100)
-            
-            selected_fragments = self.source_fragments[source_fragment_total_scores >= cutoff_score][:self.select_fragments_per_position]
-            selection_rmsd = atom_array_broadcast_rmsd(frag["coordinates"], selected_fragments["coordinates"])
-            
-            fragment_ordering = numpy.argsort(selection_rmsd)
-            per_position_selected_fragments[n] = selected_fragments[fragment_ordering]
-            per_position_selection_rmsds[n] = selection_rmsd[fragment_ordering]
+            extract_logscore_profile_scores(
+                    frag_profile,
+                    self.encoded_source_residue_sequences,
+                    source_fragment_start_indicies,
+                    source_fragment_total_scores[n])
 
-        return ProfileFragmentQualityResult(fragments, per_position_selected_fragments, per_position_selection_rmsds)
+        return source_fragment_total_scores
         
     def position_profile_from_sequence(self, input_sequence, score_table):
         """Create position specific profile table from input sequence and score table.
@@ -132,14 +195,16 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
         if target_axis is None:
             fig = pylab.figure()
             target_axis = fig.gca()
-        
+
+        fragment_rmsds = numpy.sort(self.selected_fragment_rmsds[position], axis=-1)
+
         target_axis.set_title("Fragment %s rmsd distribution." % position)
-        target_axis.hist(self.selected_fragment_rmsds[position], bins=50, normed=True)
+        target_axis.hist(fragment_rmsds, bins=50, normed=True)
         target_axis.grid(False, axis="y")
         target_axis.set_xlabel("RMSD")
         target_axis = target_axis.twinx()
         target_axis.set_yscale("symlog")
-        target_axis.plot(self.selected_fragment_rmsds[position], pylab.arange(len(self.selected_fragment_rmsds[position])), label="Fragment count at RMSD.", color="red")
+        target_axis.plot(fragment_rmsds, pylab.arange(len(fragment_rmsds)), label="Fragment count at RMSD.", color="red")
 
         target_axis.legend()
         
@@ -150,14 +215,14 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
             fig = pylab.figure()
             target_axis = fig.gca()
             
-        result_rmsds = numpy.array(len(self.selected_fragment_rmsds))
+        result_rmsds = numpy.sort(self.selected_fragment_rmsds, axis=-1)
         
         target_axis.set_title("Per-position fragment RMSD profile.")
         target_axis.set_xlabel("Position")
         target_axis.set_ylabel("RMSD")
-        target_axis.boxplot(self.selected_fragment_rmsds.T)
+        target_axis.boxplot(result_rmsds.T)
         target_axis.plot(
-                         numpy.arange(self.selected_fragment_rmsds.shape[0]) + 1,
-                         self.selected_fragment_rmsds[:,1],
+                         numpy.arange(len(result_rmsds)) + 1,
+                         result_rmsds[:,1],
                          color="red", label="Minimum fragment rmsd.")
         target_axis.legend()
