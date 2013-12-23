@@ -28,18 +28,25 @@ cdef extern from "ProfileCalculator.hpp" namespace "fragment_profiling":
           Real* result_scores,
           size_t result_count) nogil
 
-ctypedef fused index:
-    cython.char
-    cython.uchar
-    cython.uint
-    cython.int
-    cython.ushort
+ctypedef fused score_type:
+    cython.float
+    cython.double
     cython.short
+    cython.int
     cython.long
-    cython.ulong
+
+ctypedef fused index:
+    #cython.uhar
+    cython.uchar
+    #cython.short
+    cython.ushort
+    #cython.int
+    #cython.uint
+    #cython.long
+    #cython.ulong
     
 @cython.boundscheck(False)
-def extract_logscore_profile_scores(cython.floating[:,:] input_profile, index[:] source_sequences, cython.integral[:] source_start_indicies, out):
+def extract_logscore_profile_scores(numpy.ndarray[score_type, ndim=2] input_profile, index[:] source_sequences, cython.integral[:] source_start_indicies, numpy.ndarray[score_type, ndim=1] out):
     """Extract profile matrix scores for given collection of sequences.
     
     input_profile - shape (sequence_length, alphabet_size) profile scores.
@@ -52,22 +59,15 @@ def extract_logscore_profile_scores(cython.floating[:,:] input_profile, index[:]
     cdef int sequence_length = input_profile.shape[0]
     cdef int alphabet_size = input_profile.shape[1]
     
-    cdef cython.floating[:] result
+    if out is None:
+        out = numpy.empty(num_sequences, dtype=input_profile.dtype)
 
-    if out is not None:
-        result = out
-    else:
-        if cython.floating is float:
-            result = numpy.empty(num_sequences, "f4")
-        else:
-            result = numpy.empty(num_sequences, "f8")
-
-    assert result.shape[0] == num_sequences
+    assert out.shape[0] == num_sequences
     
     #assert numpy.max(sequences) < alphabet_size
     #assert numpy.min(sequences) >= 0
 
-    cdef ProfileCalculator[cython.floating, index, cython.integral] calc
+    cdef ProfileCalculator[score_type, index, cython.integral] calc
     
     cdef int n = 0, p = 0, sequence_start_index = 0
 
@@ -78,11 +78,11 @@ def extract_logscore_profile_scores(cython.floating[:,:] input_profile, index[:]
             &source_sequences[0],
             &source_start_indicies[0],
             num_sequences,
-            &result[0])
+            &out[0])
 
-    return result
+    return out
 
-def select_by_additive_profile_score(double[:,:] input_profile, index[:] source_sequences, long[:] source_start_indicies, int result_count):
+def select_by_additive_profile_score(numpy.ndarray[score_type, ndim=2] input_profile, numpy.ndarray[index, ndim=1] source_sequences, numpy.ndarray[cython.integral, ndim=1] source_start_indicies, int result_count):
     """Extract profile matrix scores for given collection of sequences.
     
     input_profile - shape (sequence_length, alphabet_size) profile scores.
@@ -95,21 +95,14 @@ def select_by_additive_profile_score(double[:,:] input_profile, index[:] source_
     cdef int sequence_length = input_profile.shape[0]
     cdef int alphabet_size = input_profile.shape[1]
     
-    cdef numpy.ndarray[long, ndim=1] result_indicies = numpy.empty(result_count, long)
-    cdef numpy.ndarray[double, ndim=1] result_scores
-
-    if double is float:
-        result_scores = numpy.empty(result_count, "f4")
-    else:
-        result_scores = numpy.empty(result_count, "f8")
+    cdef numpy.ndarray[cython.integral, ndim=1] result_indicies = numpy.empty(result_count, dtype=source_start_indicies.dtype)
+    cdef numpy.ndarray[score_type, ndim=1] result_scores = numpy.empty(result_count, dtype=input_profile.dtype)
     
     #assert numpy.max(sequences) < alphabet_size
     #assert numpy.min(sequences) >= 0
 
-    cdef ProfileCalculator[double, index, long] calc
+    cdef ProfileCalculator[score_type, index, cython.integral] calc
     
-    cdef long n = 0, p = 0, total_results = 0
-
     total_results = calc.select_by_additive_profile_score(
             &input_profile[0,0],
             sequence_length,
