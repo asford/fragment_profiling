@@ -1,9 +1,9 @@
 import logging
+import copy
 
 from collections import namedtuple
 
 import numpy
-import pylab
 
 from .profile_calculation import extract_logscore_profile_scores, select_by_additive_profile_score
 
@@ -19,6 +19,11 @@ class ProfileFragmentQuality(object):
     def __init__(self, source_residues, logscore_substitution_profile, select_fragments_per_query_position=200):
         self.source_residues = source_residues
         self.encoded_source_residue_sequences = self.sequence_array_to_encoding(source_residues["sc"]["aa"])
+
+        if isinstance(logscore_substitution_profile, basestring):
+            import Bio.SubsMat.MatrixInfo
+            assert logscore_substitution_profile in Bio.SubsMat.MatrixInfo.available_matrices
+            logscore_substitution_profile = Bio.SubsMat.MatrixInfo.__dict__[logscore_substitution_profile]
         
         self.logscore_substitution_profile = self.encode_score_table(logscore_substitution_profile)
         
@@ -66,10 +71,10 @@ class ProfileFragmentQuality(object):
         per_position_selection_rmsds = numpy.empty_like(per_position_selection_scores)
         
         for n in xrange(len(fragments)):
-            self.logger.info("profiling fragment: %s", n)
+            self.logger.debug("profiling fragment: %s", n)
             frag = fragments[n]
 
-            self.logger.info("profiling sequence: %s", frag["sc"]["aa"])
+            self.logger.debug("profiling sequence: %s", frag["sc"]["aa"])
             frag_sequence = self.sequence_array_to_encoding(frag["sc"]["aa"])
             frag_profile = self.position_profile_from_sequence(frag_sequence, self.logscore_substitution_profile)
             
@@ -186,7 +191,54 @@ class ProfileFragmentQuality(object):
 class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple", ["query_fragments", "selected_fragments", "selected_fragment_rmsds"])):
     """Result container for fragment profiling runs."""
 
+    @property
+    def result_fragment_count(self):
+        return self.selected_fragments.shape[1]
+
+    @property
+    def query_fragment_count(self):
+        return self.selected_fragments.shape[0]
+
+    def restrict_to_top_fragments(self, fragment_count):
+        """Return result subset corrosponding to top fragment_count fragments, as ranked by rmsd."""
+
+        if fragment_count >= self.selected_fragments.shape[1]:
+            return copy.deepcopy(self)
+    
+        fragment_selections = numpy.argsort(self.selected_fragment_rmsds)[...,:fragment_count]
+
+        result_selected_fragments = numpy.empty_like(fragment_selections, dtype=self.selected_fragments.dtype)
+        result_selected_fragment_rmsds = numpy.empty_like(fragment_selections, dtype=self.selected_fragment_rmsds.dtype)
+
+        for i in xrange(fragment_selections.shape[0]):
+            result_selected_fragments[i] = self.selected_fragments[i][fragment_selections[i]]
+            result_selected_fragment_rmsds[i] = self.selected_fragment_rmsds[i][fragment_selections[i]]
+        
+        return ProfileFragmentQualityResult(self.query_fragments.copy(), result_selected_fragments, result_selected_fragment_rmsds)
+
+    def prune_fragments_by_start_residue(self):
+        """Remove result fragments with identical id/resn as query fragment.
+        
+        Reduces size of result set by amount needed to remove matching fragments.
+        """
+        from interface_fragment_matching.structure_database.store import ResidueCache
+
+        matching_start_residue_mask = \
+            numpy.expand_dims(ResidueCache.residue_unique_id(self.query_fragments), -1) == \
+            ResidueCache.residue_unique_id(self.selected_fragments)
+
+        max_num_duplicates = max(numpy.sum(matching_start_residue_mask, axis=-1))
+
+        # Set fragments with matching start residue to infinite RMSD and select subset of fragments
+        # by rmsd.
+        work_copy = copy.deepcopy(self)
+        work_copy.selected_fragment_rmsds[matching_start_residue_mask] = numpy.inf
+
+        return work_copy.restrict_to_top_fragments(self.result_fragment_count - max_num_duplicates)
+
     def plot_per_position_fragment_analysis(self, position, target_axis = None):
+        from matplotlib import pylab
+
         position = int(position)
         
         if position < 0 or position >= self.selected_fragment_rmsds.shape[0]:
@@ -211,6 +263,8 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
         return target_axis
     
     def plot_all_fragment_analysis(self, target_axis = None):
+        from matplotlib import pylab
+
         if target_axis is None:
             fig = pylab.figure()
             target_axis = fig.gca()
