@@ -16,7 +16,7 @@ class ProfileFragmentQuality(object):
     aa_codes ='ARNDCEQGHILKMFPSTWYV'
     aa_encoding = dict((aa, i) for i, aa in enumerate(aa_codes))
 
-    def __init__(self, source_residues, logscore_substitution_profile, select_fragments_per_query_position=200):
+    def __init__(self, source_residues, logscore_substitution_profile, select_fragments_per_query_position):
         self.source_residues = source_residues
         self.encoded_source_residue_sequences = self.sequence_array_to_encoding(source_residues["sc"]["aa"])
 
@@ -199,22 +199,59 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
     def query_fragment_count(self):
         return self.selected_fragments.shape[0]
 
+    def generate_result_summary(self, fragment_count = 0):
+        """Generate descriptive summary of result, optionally including top fragment_count fragments.
+        
+        returns - Summary array fields:
+            "id" - query id
+            "resn" - query resn
+            "count" - total fragment count
+            "mean" - mean fragment rmsd
+            "std" - fragment rmsd stddev
+            "quartile" - 0, .25, .5, .75, 1.0 quantiles of result rmsds
+            ["selected_fragments" - top fragments]
+
+        """ 
+
+        result_dtype = [
+                    ("id", "u4"), ("resn", "u4"),
+                    ("count", "u4"), ("mean", float), ("std", float), ("quartile", float, (5,))]
+
+        if fragment_count and fragment_count > 0:
+            result_dtype += [("selected_fragments", self.selected_fragments.dtype, (fragment_count,))]
+
+        result = numpy.empty_like(
+                self.query_fragments,
+                result_dtype)
+
+        result["id"] = self.query_fragments["id"]
+        result["resn"] = self.query_fragments["resn"]
+        result["count"] = self.selected_fragments.shape[-1]
+
+        numpy.mean(self.selected_fragment_rmsds, axis=-1, out = result["mean"])
+        numpy.std(self.selected_fragment_rmsds, axis=-1, out = result["std"])
+        qr = numpy.percentile(self.selected_fragment_rmsds, [0., 25., 50., 75., 100.], axis=-1)
+        for q in xrange(len(qr)):
+            result["quartile"][:,q] = qr[q]
+
+        if fragment_count and fragment_count > 0:
+            fragment_selections = numpy.argsort(self.selected_fragment_rmsds)[...,:fragment_count]
+            idx = (numpy.expand_dims(numpy.arange(fragment_selections.shape[0]), -1), fragment_selections)
+            result["selected_fragments"] = self.selected_fragments[idx]
+
+        return result
+
     def restrict_to_top_fragments(self, fragment_count):
         """Return result subset corrosponding to top fragment_count fragments, as ranked by rmsd."""
 
         if fragment_count >= self.selected_fragments.shape[1]:
             return copy.deepcopy(self)
-    
+
         fragment_selections = numpy.argsort(self.selected_fragment_rmsds)[...,:fragment_count]
-
-        result_selected_fragments = numpy.empty_like(fragment_selections, dtype=self.selected_fragments.dtype)
-        result_selected_fragment_rmsds = numpy.empty_like(fragment_selections, dtype=self.selected_fragment_rmsds.dtype)
-
-        for i in xrange(fragment_selections.shape[0]):
-            result_selected_fragments[i] = self.selected_fragments[i][fragment_selections[i]]
-            result_selected_fragment_rmsds[i] = self.selected_fragment_rmsds[i][fragment_selections[i]]
+        # Create broadcasted selection indicies for fragment selections
+        idx = (numpy.expand_dims(numpy.arange(fragment_selections.shape[0]), -1), fragment_selections)
         
-        return ProfileFragmentQualityResult(self.query_fragments.copy(), result_selected_fragments, result_selected_fragment_rmsds)
+        return ProfileFragmentQualityResult(self.query_fragments.copy(), self.selected_fragments[idx], self.selected_fragment_rmsds[idx])
 
     def prune_fragments_by_start_residue(self):
         """Remove result fragments with identical id/resn as query fragment.
@@ -245,8 +282,7 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
             raise ValueError("Invalid fragment position specified.")
             
         if target_axis is None:
-            fig = pylab.figure()
-            target_axis = fig.gca()
+            target_axis = pylab.gca()
 
         fragment_rmsds = numpy.sort(self.selected_fragment_rmsds[position], axis=-1)
 

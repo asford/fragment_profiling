@@ -11,9 +11,9 @@ class ProfileFragmentQualityTask(TaskBase):
 
     @property
     def state_keys(self):
-        return ["fragment_specification", "profile_source_database", "target_structure_database", "logscore_substitution_profile"]
+        return ["fragment_specification", "profile_source_database", "logscore_substitution_profile", "select_fragments_per_query_position"]
     
-    def __init__(self, fragment_specification, profile_source_database, logscore_substitution_profile, select_fragments_per_query_position=200):
+    def __init__(self, fragment_specification, profile_source_database, logscore_substitution_profile, select_fragments_per_query_position):
         """Create profiling task.
 
         fragent_specifiction - Specifiction used to defined profiled fragments.
@@ -26,6 +26,7 @@ class ProfileFragmentQualityTask(TaskBase):
         self.profile_source_database = profile_source_database
         
         self.logscore_substitution_profile = logscore_substitution_profile
+        self.select_fragments_per_query_position = select_fragments_per_query_position
         TaskBase.__init__(self)
     
     def setup(self):
@@ -34,7 +35,8 @@ class ProfileFragmentQualityTask(TaskBase):
         
         self.profiler = ProfileFragmentQuality(
                                 source_residues,
-                                self.logscore_substitution_profile)
+                                self.logscore_substitution_profile,
+                                self.select_fragments_per_query_position)
         
         TaskBase.setup(self)
     
@@ -52,7 +54,7 @@ class BenchmarkProfileFragmentQualityTask(ProfileFragmentQualityTask):
         return super(BenchmarkProfileFragmentQualityTask, self).state_keys + ["target_structure_database", "return_fragments_per_query_position"]
 
     def __init__(self, target_structure_database, fragment_specification, profile_source_database, logscore_substitution_profile, select_fragments_per_query_position, return_fragments_per_query_position):
-        ProfileFragmentQualityTask.__init__(self, fragment_specification, profile_source_database, logscore_substitution_profile)
+        ProfileFragmentQualityTask.__init__(self, fragment_specification, profile_source_database, logscore_substitution_profile, select_fragments_per_query_position)
 
         self.target_structure_database = target_structure_database
         self.return_fragments_per_query_position = return_fragments_per_query_position
@@ -72,4 +74,4 @@ class BenchmarkProfileFragmentQualityTask(ProfileFragmentQualityTask):
 
         result = ProfileFragmentQualityTask.execute(self, source_residues)
 
-        return result.prune_fragments_by_start_residue().restrict_to_top_fragments(self.return_fragments_per_query_position)
+        return result.prune_fragments_by_start_residue().generate_result_summary(self.return_fragments_per_query_position)

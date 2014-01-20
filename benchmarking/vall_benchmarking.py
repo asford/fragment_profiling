@@ -55,40 +55,63 @@ def profile_structure_collection(target_structure_database, target_ids, fragment
     profiler_task = BenchmarkProfileFragmentQualityTask(target_structure_database, fragment_specification, profile_source_database, logscore_substitution_profile, select_fragments_per_query_position, keep_top_fragments_per_query_position)
 
     profiler_results = map_partitions(profiler_task, target_ids, 4000)
-
-    result_summary = agglomerative_reduction_task(reduce_result_summary, 100, [Tasklet(r, extract_result_summary_table) for r in profiler_results])
+    result_summary = agglomerative_reduction_task(reduce_result_summary, 100, profiler_results)
 
     return result_summary
+
+def dict_element_product(options_dict):
+    ks = options_dict.keys()
+    return [tuple(zip(ks, vs)) for vs in itertools.product(*[options_dict[k] for k in ks])]
 
 profile_source_database = "/work/fordas/test_sets/vall_store.h5"
 target_structure_database = "/work/fordas/test_sets/vall_store.h5"
 target_ids = Task(read_structure_ids, target_structure_database)
 keep_top_fragments_per_query_position = 5
 
-candidate_parameter_values = dict(
-    logscore_substitution_profile = ('blosum100',"blosum62"),
+initial_candidate_parameter_values = dict(
+    logscore_substitution_profile = ('blosum100',),
     select_fragments_per_query_position = (300, 200),
     fragment_specification = (FragmentSpecification(9, "CA"), FragmentSpecification(9, ("N", "CA", "C")))
 )
-logging.info("candidate_parameter_values: %s", candidate_parameter_values)
 
-parameter_keys = candidate_parameter_values.keys()
+query_size_sweep_parameter_values = dict(
+    logscore_substitution_profile = ('blosum100',),
+    select_fragments_per_query_position = (10, 20, 50, 100, 200, 400, 500, 1000),
+    fragment_specification = (FragmentSpecification(9, "CA"), ))
+
+parameter_keys = initial_candidate_parameter_values.keys()
 logging.info("parameter_keys: %s", parameter_keys)
 
+parameter_sets = set(dict_element_product(initial_candidate_parameter_values) + dict_element_product(query_size_sweep_parameter_values))
+
 result_summaries = []
-for parameter_values in itertools.product(*[candidate_parameter_values[k] for k in parameter_keys]):
-    logging.info("parameter_values: %s", parameter_values)
-    parameter_values = dict(zip(parameter_keys, parameter_values))
-    logging.info("parameter_values: %s", parameter_values)
+for parameter_values in sorted(parameter_sets):
+    input_parameter_values = dict(parameter_values)
+    logging.info("parameter_values: %s", input_parameter_values)
 
     final_result_summary =  CompoundTask(
                                 profile_structure_collection,
                                 target_structure_database,
                                 target_ids,
-                                parameter_values["fragment_specification"],
+                                input_parameter_values["fragment_specification"],
                                 profile_source_database,
-                                parameter_values["logscore_substitution_profile"],
-                                parameter_values["select_fragments_per_query_position"],
+                                input_parameter_values["logscore_substitution_profile"],
+                                input_parameter_values["select_fragments_per_query_position"],
                                 keep_top_fragments_per_query_position)
 
     result_summaries.append((parameter_values, final_result_summary))
+
+def generate_quantile_summary(result_summary_table, quantiles = numpy.linspace(0, 1, 101)):
+    from scipy.stats.mstats import mquantiles
+    import pandas
+    
+    summary_table = pandas.DataFrame.from_items([("id", result_summary_table["id"]), ("rmsd", result_summary_table["quartile"][...,0])])
+    
+    result = numpy.empty_like(quantiles, dtype=[("quantile", float), ("global_quantile_value", float), ("worst_per_structure_quantile_value", float)])
+    result["quantile"] = quantiles
+    result["global_quantile_value"] = mquantiles(summary_table["rmsd"].values, quantiles)
+    result["worst_per_structure_quantile_value"] = mquantiles(summary_table.groupby("id")["rmsd"].max().values, quantiles)
+    
+    return result
+
+quantile_summaries = [(p, Task(generate_quantile_summary, r)) for p, r in result_summaries]
