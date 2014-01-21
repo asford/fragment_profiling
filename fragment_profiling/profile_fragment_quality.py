@@ -10,6 +10,8 @@ from .profile_calculation import extract_logscore_profile_scores, select_by_addi
 from interface_fragment_matching.fragment_fitting.rmsd_calc import atom_array_broadcast_rmsd
 from interface_fragment_matching.fragment_fitting.store import FragmentSpecification
 
+FragmentProfilerParameters = namedtuple("FragmentProfilerParameters", ["fragment_specification", "logscore_substitution_profile", "select_fragments_per_query_position"])
+
 class ProfileFragmentQuality(object):
     logger = logging.getLogger("fragment_profling.profile_fragment_quality.ProfileFragmentQuality")
 
