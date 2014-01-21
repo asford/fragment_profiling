@@ -1,0 +1,50 @@
+*.py[cod]
+
+# C extensions
+*.so
+fragment_profiling/*.cpp
+fragment_profiling/*.html
+fragment_profiling/*.c
+
+# Packages
+*.egg
+*.egg-info
+dist
+build
+eggs
+parts
+bin
+var
+sdist
+develop-eggs
+.installed.cfg
+lib
+lib64
+
+# Installer logs
+pip-log.txt
+
+# Unit test / coverage reports
+coverage_report
+test_report.html
+.coverage
+.tox
+nosetests.xml
+
+# Translations
+*.mo
+
+# Mr Developer
+.mr.developer.cfg
+.project
+.pydevproject
+
+Sublime project files
+._*sublime-*
+
+# OSX
+*.DS_Store
+
+# IPython Notebook
+.ipynb_checkpoints/*
+.ipynb_checkpoints
