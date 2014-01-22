@@ -79,7 +79,7 @@ class FragmentProfilingDatabase(object):
         """Return list of fragment profiling benchmark sets."""
         return set(i._v_name for i in self.store.iter_nodes("/fragment_profiling_benchmarks"))
     
-    def add_profiler(self, name, target_residue_table, profiling_results):
+    def add_profiling_benchmark(self, name, target_residue_table, profiling_results):
         """Add profiler benchmark data to database."""
         
         self.store.create_group("/fragment_profiling_benchmarks", name, name)
@@ -100,8 +100,8 @@ class FragmentProfilingDatabase(object):
         
         self.store.flush()
         
-    def get_profiler(self, name):
-        """Get profiler initialzed from the given benchmark set name."""
+    def get_profiling_benchmark(self, name):
+        """Get profiler data from the given benchmark set name."""
         
         profiler_residues = self.store.get_node(path.join("/fragment_profiling_benchmarks", name, "residues"))
         profiler_residues = profiler_residues().read()

@@ -1,10 +1,19 @@
+import logging
+
 import numpy
 
 from interface_fragment_matching.tasks.utility import TaskBase
 
 from interface_fragment_matching.structure_database.store import StructureDatabase
 
-from .profile_fragment_quality import ProfileFragmentQuality
+from .profile_fragment_quality import ProfileFragmentQuality, FragmentProfilerParameters
+from .store import FragmentProfilingDatabase
+
+# Set default omp parameters for interactive use
+from interface_fragment_matching.parallel import openmp_utils
+if not openmp_utils.omp_get_max_threads():
+    logging.warning("omp_set_num_threads(%s)", 4)
+    openmp_utils.omp_set_num_threads(4)
 
 class ProfileFragmentQualityTask(TaskBase):
     """Perform fragment quality profiling on structure residues."""
@@ -43,6 +52,51 @@ class ProfileFragmentQualityTask(TaskBase):
     def execute(self, target_residues):
         """Segment target residues into fragments and perform per-fragment profiling."""
         _, target_fragments = self.fragment_specification.fragments_from_source_residues(
+                                        target_residues,
+                                        additional_per_residue_fields=["bb", "sc", "ss"])
+
+        return self.profiler.perform_fragment_analysis(target_fragments)
+
+class BenchmarkedProfileFragmentQualityTask(TaskBase):
+    """Perform fragment quality profiling on structure residues via a benchmarked profiling configuration."""
+
+    @property
+    def state_keys(self):
+        return ["profiling_database", "profile_benchmark_name", "profiler_parameters"]
+    
+    def __init__(self, profiling_database, profile_benchmark_name, profiler_parameters):
+        """Create profiling task.
+
+        profiling_database - Source profiling database.
+        profile_benchmark_name - Source profiling database.
+        profiler_parameters - Profiling parameters for run.
+        """
+
+        self.profiling_database = profiling_database
+        self.profile_benchmark_name = profile_benchmark_name
+        self.profiler_parameters = profiler_parameters
+
+        TaskBase.__init__(self)
+    
+    def setup(self):
+        """Load source structure database and prepare profiler."""
+        with FragmentProfilingDatabase(self.profiling_database) as prof_db:
+            source_residues, source_benchmarks = prof_db.get_profiling_benchmark(self.profile_benchmark_name)
+
+        if not self.profiler_parameters in source_benchmarks:
+            raise ValueError("Provided profiler_parameters %s not present in database. Available parameters:\n%s", self.profiler_parameters, source_benchmarks.keys())
+
+        self.profiler = ProfileFragmentQuality(
+                                source_residues,
+                                self.profiler_parameters.logscore_substitution_profile,
+                                self.profiler_parameters.select_fragments_per_query_position,
+                                source_benchmarks)
+        
+        TaskBase.setup(self)
+    
+    def execute(self, target_residues):
+        """Segment target residues into fragments and perform per-fragment profiling."""
+        _, target_fragments = self.profiler_parameters.fragment_specification.fragments_from_source_residues(
                                         target_residues,
                                         additional_per_residue_fields=["bb", "sc", "ss"])
 

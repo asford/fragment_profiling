@@ -18,22 +18,29 @@ class ProfileFragmentQuality(object):
     aa_codes ='ARNDCEQGHILKMFPSTWYV'
     aa_encoding = dict((aa, i) for i, aa in enumerate(aa_codes))
 
-    def __init__(self, source_residues, logscore_substitution_profile, select_fragments_per_query_position):
+    def __init__(self, source_residues, logscore_substitution_profile, select_fragments_per_query_position, profiler_benchmark_summaries = {}):
         self.source_residues = source_residues
         self.encoded_source_residue_sequences = self.sequence_array_to_encoding(source_residues["sc"]["aa"])
 
         if isinstance(logscore_substitution_profile, basestring):
             import Bio.SubsMat.MatrixInfo
             assert logscore_substitution_profile in Bio.SubsMat.MatrixInfo.available_matrices
-            logscore_substitution_profile = Bio.SubsMat.MatrixInfo.__dict__[logscore_substitution_profile]
+
+            self.logscore_substitution_profile_name = logscore_substitution_profile
+            self.logscore_substitution_profile_data = Bio.SubsMat.MatrixInfo.__dict__[logscore_substitution_profile]
+        else:
+            self.logscore_substitution_profile_name = None
+            self.logscore_substitution_profile_data = logscore_substitution_profile
         
-        self.logscore_substitution_profile = self.encode_score_table(logscore_substitution_profile)
+        self.logscore_substitution_profile_data = self.encode_score_table(self.logscore_substitution_profile_data)
         
         self.select_fragments_per_query_position = select_fragments_per_query_position
 
         # Cache fragment start indicies over multiple profiling runs.
         self._cached_fragment_start_length = None
         self._cached_fragment_start_indicies = None
+    
+        self.profiler_benchmark_summaries = dict(profiler_benchmark_summaries)
 
     def get_fragment_start_residues(self, fragment_length):
         """Get all starting indicies in self.source_residues for the given fragment length."""
@@ -78,7 +85,7 @@ class ProfileFragmentQuality(object):
 
             self.logger.debug("profiling sequence: %s", frag["sc"]["aa"])
             frag_sequence = self.sequence_array_to_encoding(frag["sc"]["aa"])
-            frag_profile = self.position_profile_from_sequence(frag_sequence, self.logscore_substitution_profile)
+            frag_profile = self.position_profile_from_sequence(frag_sequence, self.logscore_substitution_profile_data)
             
             self.logger.debug("profile table: %s", frag_profile)
 
@@ -100,7 +107,21 @@ class ProfileFragmentQuality(object):
                                             fragments[n]["coordinates"],
                                             per_position_selected_fragments[n]["coordinates"])
 
-        return ProfileFragmentQualityResult(fragments, per_position_selected_fragments, per_position_selection_rmsds)
+        search_parameters = FragmentProfilerParameters(fspec, self.logscore_substitution_profile_name, self.select_fragments_per_query_position)
+
+        if search_parameters in self.profiler_benchmark_summaries:
+            query_benchmark_data = self.profiler_benchmark_summaries[search_parameters]
+            quantile_indicies = numpy.searchsorted(query_benchmark_data["global_quantile_value"], per_position_selection_rmsds)
+            quantile_indicies[quantile_indicies >= len(query_benchmark_data["global_quantile_value"])] = len(query_benchmark_data["global_quantile_value"]) - 1
+            selected_fragment_quantiles = query_benchmark_data["quantile"][quantile_indicies]
+        else:
+            if self.profiler_benchmark_summaries:
+                # Log warning if profiler has benchmark data but user's query isn't benchmarked.
+                self.logger.warning("Query parameters not benchmarked, result quantiles will not be calculated. %s", search_parameters)
+            
+            selected_fragment_quantiles = None
+
+        return ProfileFragmentQualityResult(fragments, per_position_selected_fragments, per_position_selection_rmsds, selected_fragment_quantiles)
 
     def profile_fragment_scoring(self, fragments):
         fragments = numpy.array(fragments)
@@ -111,12 +132,12 @@ class ProfileFragmentQuality(object):
         source_fragment_start_indicies = self.get_fragment_start_residues(fspec.fragment_length)
 
         # Pre-allocate result score tables.
-        source_fragment_total_scores = numpy.empty((len(fragments), len(source_fragment_start_indicies)), dtype=self.logscore_substitution_profile.dtype)
+        source_fragment_total_scores = numpy.empty((len(fragments), len(source_fragment_start_indicies)), dtype=self.logscore_substitution_profile_data.dtype)
 
         for n in xrange(len(fragments)):
             frag = fragments[n]
             frag_sequence = self.sequence_array_to_encoding(frag["sc"]["aa"])
-            frag_profile = self.position_profile_from_sequence(frag_sequence, self.logscore_substitution_profile)
+            frag_profile = self.position_profile_from_sequence(frag_sequence, self.logscore_substitution_profile_data)
             
             extract_logscore_profile_scores(
                     frag_profile,
@@ -190,9 +211,12 @@ class ProfileFragmentQuality(object):
         
         return result
 
-class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple", ["query_fragments", "selected_fragments", "selected_fragment_rmsds"])):
+class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResult", ["query_fragments", "selected_fragments", "selected_fragment_rmsds", "selected_fragment_quantiles"])):
     """Result container for fragment profiling runs."""
-
+    
+    #def __new__(_cls, query_fragments, selected_fragments, selected_fragment_rmsds, selected_fragment_quantiles = None):
+        #"""Create new result tuple, defaulting to no selected_fragment_quantiles."""
+        #return super(FragmentSpecification, _cls).__new__(_cls, query_fragments, selected_fragments, selected_fragment_rmsds, selected_fragment_quantiles)
     @property
     def result_fragment_count(self):
         return self.selected_fragments.shape[1]
@@ -212,6 +236,7 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
             "std" - fragment rmsd stddev
             "quartile" - 0, .25, .5, .75, 1.0 quantiles of result rmsds
             ["selected_fragments" - top fragments]
+            ["fragment_quantile" - fragment profile quantile]
 
         """ 
 
@@ -222,6 +247,9 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
         if fragment_count and fragment_count > 0:
             result_dtype += [("selected_fragments", self.selected_fragments.dtype, (fragment_count,))]
 
+        if self.selected_fragment_quantiles is not None:
+            result_dtype += [("fragment_quantile", float)]
+            
         result = numpy.empty_like(
                 self.query_fragments,
                 result_dtype)
@@ -241,6 +269,9 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
             idx = (numpy.expand_dims(numpy.arange(fragment_selections.shape[0]), -1), fragment_selections)
             result["selected_fragments"] = self.selected_fragments[idx]
 
+        if self.selected_fragment_quantiles is not None:
+            result["fragment_quantile"] = numpy.min(self.selected_fragment_quantiles, axis=-1)
+
         return result
 
     def restrict_to_top_fragments(self, fragment_count):
@@ -253,7 +284,7 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
         # Create broadcasted selection indicies for fragment selections
         idx = (numpy.expand_dims(numpy.arange(fragment_selections.shape[0]), -1), fragment_selections)
         
-        return ProfileFragmentQualityResult(self.query_fragments.copy(), self.selected_fragments[idx], self.selected_fragment_rmsds[idx])
+        return ProfileFragmentQualityResult(self.query_fragments.copy(), self.selected_fragments[idx], self.selected_fragment_rmsds[idx], self.selected_fragment_quantiles[idx] if not self.selected_fragment_quantiles is None else None)
 
     def prune_fragments_by_start_residue(self):
         """Remove result fragments with identical id/resn as query fragment.
@@ -307,14 +338,20 @@ class ProfileFragmentQualityResult(namedtuple("ProfileFragmentQualityResultTuple
             fig = pylab.figure()
             target_axis = fig.gca()
             
-        result_rmsds = numpy.sort(self.selected_fragment_rmsds, axis=-1)
-        
-        target_axis.set_title("Per-position fragment RMSD profile.")
+        target_axis.set_title("Per-position fragment profile.")
         target_axis.set_xlabel("Position")
-        target_axis.set_ylabel("RMSD")
-        target_axis.boxplot(result_rmsds.T)
-        target_axis.plot(
-                         numpy.arange(len(result_rmsds)) + 1,
-                         result_rmsds[:,1],
-                         color="red", label="Minimum fragment rmsd.")
-        target_axis.legend()
+        target_axis.set_ylabel("Fragment RMSD distribution.")
+        target_axis.boxplot(self.selected_fragment_rmsds.T)
+        
+        if self.selected_fragment_quantiles is not None:
+            rs = self.generate_result_summary()
+            ax2 = target_axis.twinx()
+            ax2.plot(
+                         numpy.arange(len(rs)) + 1,
+                         rs["fragment_quantile"],
+                         color="red", alpha=.7, linewidth=4, label="Fragment benchmark quantile.")
+            ax2.set_ylim(0, 1)
+            ax2.grid("off", axis="y")
+            ax2.set_ylabel("Benchmark quantile.")
+
+            ax2.legend(loc="best")

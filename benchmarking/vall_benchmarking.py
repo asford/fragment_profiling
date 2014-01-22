@@ -4,10 +4,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)-15s - %(name)s - %(le
 import itertools
 
 import jug
-from jug import Task, TaskGenerator, Tasklet, bvalue
+from jug import Task, TaskGenerator, Tasklet, bvalue, barrier
 from jug.compound import CompoundTask
 
 import numpy
+
+import tables
 
 import rosetta
 
@@ -17,6 +19,9 @@ from interface_fragment_matching.structure_database.store import StructureDataba
 from interface_fragment_matching.fragment_fitting.store import FragmentSpecification
 
 from fragment_profiling.tasks import BenchmarkProfileFragmentQualityTask
+
+from fragment_profiling.store import FragmentProfilingDatabase
+from fragment_profiling.profile_fragment_quality import FragmentProfilerParameters
 
 def read_structure_ids(db):
     return StructureDatabase(db).structures.read()["id"]
@@ -59,6 +64,19 @@ def profile_structure_collection(target_structure_database, target_ids, fragment
 
     return result_summary
 
+def generate_quantile_summary(result_summary_table, quantiles = numpy.linspace(0, 1, 101)):
+    from scipy.stats.mstats import mquantiles
+    import pandas
+    
+    summary_table = pandas.DataFrame.from_items([("id", result_summary_table["id"]), ("rmsd", result_summary_table["quartile"][...,0])])
+    
+    result = numpy.empty_like(quantiles, dtype=[("quantile", float), ("global_quantile_value", float), ("worst_per_structure_quantile_value", float)])
+    result["quantile"] = quantiles
+    result["global_quantile_value"] = mquantiles(summary_table["rmsd"].values, quantiles)
+    result["worst_per_structure_quantile_value"] = mquantiles(summary_table.groupby("id")["rmsd"].max().values, quantiles)
+    
+    return result
+
 def dict_element_product(options_dict):
     ks = options_dict.keys()
     return [tuple(zip(ks, vs)) for vs in itertools.product(*[options_dict[k] for k in ks])]
@@ -85,6 +103,8 @@ logging.info("parameter_keys: %s", parameter_keys)
 parameter_sets = set(dict_element_product(initial_candidate_parameter_values) + dict_element_product(query_size_sweep_parameter_values))
 
 result_summaries = []
+quantile_summaries = []
+
 for parameter_values in sorted(parameter_sets):
     input_parameter_values = dict(parameter_values)
     logging.info("parameter_values: %s", input_parameter_values)
@@ -101,17 +121,15 @@ for parameter_values in sorted(parameter_sets):
 
     result_summaries.append((parameter_values, final_result_summary))
 
-def generate_quantile_summary(result_summary_table, quantiles = numpy.linspace(0, 1, 101)):
-    from scipy.stats.mstats import mquantiles
-    import pandas
-    
-    summary_table = pandas.DataFrame.from_items([("id", result_summary_table["id"]), ("rmsd", result_summary_table["quartile"][...,0])])
-    
-    result = numpy.empty_like(quantiles, dtype=[("quantile", float), ("global_quantile_value", float), ("worst_per_structure_quantile_value", float)])
-    result["quantile"] = quantiles
-    result["global_quantile_value"] = mquantiles(summary_table["rmsd"].values, quantiles)
-    result["worst_per_structure_quantile_value"] = mquantiles(summary_table.groupby("id")["rmsd"].max().values, quantiles)
-    
-    return result
+    barrier()
 
-quantile_summaries = [(p, Task(generate_quantile_summary, r)) for p, r in result_summaries]
+    quantile_summaries.append((parameter_values, Task(generate_quantile_summary, final_result_summary)))
+
+def write_summary_store(store_name, collection_name, target_residue_name, quantile_summaries):
+    quantile_summaries = dict(( FragmentProfilerParameters(**dict(q)), v) for q, v in quantile_summaries)
+
+    with FragmentProfilingDatabase(tables.open_file(store_name, "w")) as profile_db:
+        profile_db.setup()
+        profile_db.add_profiling_benchmark(collection_name, "/work/fordas/test_sets/vall_store.h5:/residues", quantile_summaries)
+
+Task(write_summary_store, "vall_store_fragment_profiling.h5", "vall_benchmarking", "%s:/residues" % profile_source_database, quantile_summaries)
