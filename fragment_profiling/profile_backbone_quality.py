@@ -16,7 +16,7 @@ class ProfileBackboneQuality(object):
 
     def perform_backbone_analysis(self, query_fragments):
         """Perform backbone analysis on given fragments."""
-        query_fragment_coordinates = self.fragment_spec.fragments_to_coordiante_array(query_fragments)
+        query_fragment_coordinates = self.fragment_spec.fragments_to_coordinate_array(query_fragments)
         if not query_fragment_coordinates.shape[-2] == self.fragment_spec.fragment_length * len(self.fragment_spec.fragment_atoms):
             raise ValueError("query_fragments of incorrect length")
 
