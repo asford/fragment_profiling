@@ -51,7 +51,7 @@ class ProfileCalculator
           index_score.first += input_profile[(p * alphabet_size) + source_sequences[source_start_indicies[n] + p]];
         }
 
-        if (local_results.empty() || index_score > local_results.top())
+        if (local_results.size() < result_count || index_score > local_results.top())
         {
           local_results.push(index_score);
 
@@ -66,7 +66,7 @@ class ProfileCalculator
       {
         while (!local_results.empty())
         {
-          if(global_results.size() < result_count  || local_results.top() > global_results.top())
+          if(global_results.size() < result_count || local_results.top() > global_results.top())
           {
             global_results.push(local_results.top());
 
