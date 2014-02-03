@@ -5,9 +5,21 @@ from collections import namedtuple
 import numpy
 
 from interface_fragment_matching.fragment_fitting.lookup import FragmentMatchLookup
+from interface_fragment_matching.fragment_fitting.store import FragmentDatabase, FragmentSpecification
 
 class ProfileBackboneQuality(object):
     logger = logging.getLogger("fragment_profiling.profile_backbone_quality.ProfileBackboneQuality")
+
+    @staticmethod
+    def from_database(fragment_database_name, fragment_group_name):
+        """Initialize profiler from the given database path and fragment group."""
+        with FragmentDatabase(fragment_database_name) as fragment_database:
+            test_fragments = fragment_database.fragments[fragment_group_name].read()
+            test_fragment_length = fragment_database.fragments[fragment_group_name].attrs.fragment_length
+            test_fragment_atoms = fragment_database.fragments[fragment_group_name].attrs.fragment_atoms.split(",")
+            test_fragment_spec = FragmentSpecification(test_fragment_length, test_fragment_atoms)
+        
+        return ProfileBackboneQuality(test_fragments, test_fragment_spec)
 
     def __init__(self, source_fragments, fragment_spec):
         self.source_fragments = source_fragments
@@ -21,10 +33,13 @@ class ProfileBackboneQuality(object):
             raise ValueError("query_fragments of incorrect length")
 
         lookup_result = self.lookup.closest_matching_fragment(query_fragment_coordinates)
-    
-        return ProfileBackboneQualityResult(query_fragments, lookup_result)
 
-class ProfileBackboneQualityResult(namedtuple("ProfileBackboneQualityResultTuple", ["query_fragments", "lookup_results"])):
+        lookup_result_quantiles = numpy.ones_like(lookup_result, dtype=float)
+        lookup_result_quantiles[numpy.isinf(lookup_result["match_distance"])] = numpy.nan 
+    
+        return ProfileBackboneQualityResult(query_fragments, lookup_result, lookup_result_quantiles)
+
+class ProfileBackboneQualityResult(namedtuple("ProfileBackboneQualityResultTuple", ["query_fragments", "lookup_results", "lookup_result_quantiles"])):
     """Result container for fragment profiling runs."""
     
     @property
@@ -33,12 +48,15 @@ class ProfileBackboneQualityResult(namedtuple("ProfileBackboneQualityResultTuple
             ("query_id", "u4"), ("query_resn", "u4"),
             ("match_id", "u4"), ("match_resn", "u4"),
             ("match_distance", float),
-            ("threshold_distance", float)])
+            ("threshold_distance", float),
+            ("match_quantile", float)])
         
         result_summary["query_id"] = self.query_fragments["id"]
         result_summary["query_resn"] = self.query_fragments["resn"]
 
         result_summary["match_distance"] = self.lookup_results["match_distance"]
+        result_summary["match_quantile"] = self.lookup_result_quantiles
+
         result_summary["match_id"] = self.lookup_results["match"]["id"]
         result_summary["match_resn"] = self.lookup_results["match"]["resn"]
         result_summary["threshold_distance"] = self.lookup_results["match"]["threshold_distance"]
